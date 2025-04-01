@@ -65,7 +65,10 @@ local Currencies = {
 		minValue = 0,
 		maxValue = 1_000_000_000, -- 1 billion max
 		purchaseIDs = {
-			[100] = 3253924294,
+			[100] = 3254661193,      -- 1 Robux
+			[10000] = 3254661195,    -- 300 Robux
+			[100000] = 3254661196,   -- 1000 Robux
+			[1000000] = 3254661198,  -- 5000 Robux
 		}
 	},
 	Gems = {
@@ -125,9 +128,10 @@ local function logTransaction(transactionInfo)
 
 	-- Use the provided transaction type or Default if not specified
 	local transactionType = transactionInfo.transactionType or Enum.AnalyticsEconomyTransactionType.Default
+	
+	local player = Players:GetPlayerByUserId(transactionInfo.playerID)
 
 	if RunService:IsStudio() then
-		local player = Players:GetPlayerByUserId(transactionInfo.playerID)
 		local playerName = player and player.Name or "Unknown Player"
 
 		local logMessage = string.format(
@@ -138,21 +142,22 @@ local function logTransaction(transactionInfo)
 			transactionInfo.currencyKey,
 			transactionInfo.changeAmount,
 			transactionInfo.newValue,
-			(transactionInfo.changeAmount .. " " .. transactionInfo.currencyKey)
+			transactionInfo.reason
 		)
+		print(transactionInfo)
 
 		print(logMessage)
 	end
 
 	-- Use actual enum values when calling the API
 	AnalyticsService:LogEconomyEvent(
-		Players:GetPlayerByUserId(transactionInfo.playerID),
+		player,
 		flowType,                 -- Flow type: Source or Sink
 		transactionInfo.currencyKey,
 		math.abs(transactionInfo.changeAmount),  -- Use absolute value as the API expects
 		transactionInfo.newValue,
 		transactionType.Name,          -- Transaction type: Gameplay, Shop, etc.
-		(transactionInfo.changeAmount .. " " .. transactionInfo.currencyKey)
+		transactionInfo.reason
 	)
 end
 
@@ -655,25 +660,29 @@ function Economy.GetPlayerCurrencies(playerID)
 end
 
 function Economy.ProcessReceipt(receiptInfo)
+	print(receiptInfo)
+	-- Get product info for the developer product
+	local success, productInfo = pcall(function()
+		return MarketplaceService:GetProductInfo(receiptInfo.ProductId)
+	end)
+	local productName = (success and productInfo and productInfo.Name) or "Unknown Product"
+
 	-- Enhanced Studio testing mode
 	if RunService:IsStudio() then
-
 		print("[Economy] Auto-granting purchase in Studio environment for Product ID:", receiptInfo.ProductId)
 
 		local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
 		if player then
-
+			
 			local mapping = developerProductMapping[receiptInfo.ProductId]
 			if mapping then
-
 				local currency = mapping.currencyData
 				local success, errorMsg = currency:IncrementValue(
 					receiptInfo.PlayerId,
 					mapping.amount,
-					"StudioPurchase_" .. (receiptInfo.ReceiptId or HttpService:GenerateGUID(false)),
+					"StudioPurchase_" .. productName,
 					Enum.AnalyticsEconomyTransactionType.IAP -- Explicitly use IAP type for purchases
 				)
-
 				if not success then
 					warn("[Economy] Failed to grant currency in Studio: " .. (errorMsg or "Unknown error"))
 				end
@@ -685,64 +694,60 @@ function Economy.ProcessReceipt(receiptInfo)
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
 
-	if not receiptInfo.ReceiptId then
-		warn("[Economy] ReceiptId is nil. This should not happen in production.")
-		return Enum.ProductPurchaseDecision.PurchaseGranted
+	-- Production: If ReceiptId is nil during testing, generate a fallback ReceiptId
+	if not receiptInfo.transactionId then
+		warn("[Economy] ReceiptId is nil. Generating fallback ReceiptId")
+		receiptInfo.transactionId = HttpService:GenerateGUID(false)
 	end
 
-	if receiptProcessingMap[receiptInfo.ReceiptId] then
+	if receiptProcessingMap[receiptInfo.transactionId] then
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 
-	receiptProcessingMap[receiptInfo.ReceiptId] = true
+	receiptProcessingMap[receiptInfo.transactionId] = true
 
 	local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
 	if not player then
-
-		receiptProcessingMap[receiptInfo.ReceiptId] = nil
+		receiptProcessingMap[receiptInfo.transactionId] = nil
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
-
 
 	local profile, errorMsg = safeGetProfile(receiptInfo.PlayerId)
 	if not profile then
-
-		receiptProcessingMap[receiptInfo.ReceiptId] = nil
+		receiptProcessingMap[receiptInfo.transactionId] = nil
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 
-
-	if profile.Data.processedReceipts[receiptInfo.ReceiptId] then
-		receiptProcessingMap[receiptInfo.ReceiptId] = nil
+	if profile.Data.processedReceipts[receiptInfo.transactionId] then
+		receiptProcessingMap[receiptInfo.transactionId] = nil
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
-
 
 	local mapping = developerProductMapping[receiptInfo.ProductId]
 	if not mapping then
 		warn("[Economy] Unknown developer product ID: " .. tostring(receiptInfo.ProductId))
-		receiptProcessingMap[receiptInfo.ReceiptId] = nil
+		receiptProcessingMap[receiptInfo.transactionId] = nil
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
-
 
 	local currency = mapping.currencyData
 	local success, errorMsg = currency:IncrementValue(
 		receiptInfo.PlayerId, 
 		mapping.amount, 
-		"Purchase_" .. receiptInfo.ReceiptId,
+		"Purchase_" .. productName,
 		Enum.AnalyticsEconomyTransactionType.IAP -- Explicitly use IAP type for purchases
 	)
 
 	if not success then
-		warn("[Economy] Failed to grant currency for receipt " .. receiptInfo.ReceiptId .. ": " .. (errorMsg or "Unknown error"))
-		receiptProcessingMap[receiptInfo.ReceiptId] = nil
+		warn("[Economy] Failed to grant currency for receipt " .. receiptInfo.transactionId .. ": " .. (errorMsg or "Unknown error"))
+		receiptProcessingMap[receiptInfo.transactionId] = nil
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
 
+	-- Log the developer product name for production purchases
+	print("[Economy] Purchase processed for product:", productName)
 
-	profile.Data.processedReceipts[receiptInfo.ReceiptId] = DateTime.now().UnixTimestampMillis * 1000
-
+	profile.Data.processedReceipts[receiptInfo.transactionId] = DateTime.now().UnixTimestampMillis * 1000
 
 	local saveSuccess, saveError = pcall(function()
 		profile:Save()
@@ -752,7 +757,7 @@ function Economy.ProcessReceipt(receiptInfo)
 		warn("[Economy] Failed to save profile after purchase: " .. (saveError or "Unknown error"))
 	end
 
-	receiptProcessingMap[receiptInfo.ReceiptId] = nil
+	receiptProcessingMap[receiptInfo.transactionId] = nil
 	return Enum.ProductPurchaseDecision.PurchaseGranted
 end
 
