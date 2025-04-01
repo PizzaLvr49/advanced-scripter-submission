@@ -8,7 +8,7 @@ local RunService = game:GetService("RunService")
 local Economy = {}
 
 -- Constants for configuration 
-local profileStoreName = "PlayerEconomy"
+local profileStoreName = "dev"
 local profileTemplate = {
 	currencies = {},
 	processedReceipts = {},
@@ -119,21 +119,25 @@ end
 
 local function logTransaction(transactionInfo)
 	
+	local transactionType = transactionInfo.transactionType or Enum.AnalyticsEconomyTransactionType.Default
+
+	local flowType = transactionInfo.changeAmount >= 0 
+		and Enum.AnalyticsEconomyFlowType.Source 
+		or Enum.AnalyticsEconomyFlowType.Sink
+
 	if RunService:IsStudio() then
 		local player = Players:GetPlayerByUserId(transactionInfo.playerID)
 		local playerName = player and player.Name or "Unknown Player"
-		local transactionType = Enum.AnalyticsEconomyTransactionType.IAP.Name
-		local flowType = Enum.AnalyticsEconomyFlowType.Source
 
 		local logMessage = string.format(
 			"[TRANSACTION] Player: %s | Type: %s | Flow: %s | Currency: %s | Change: %+d | New Balance: %d | Description: %s",
 			playerName,
-			transactionType,
+			transactionType.Name,
 			tostring(flowType),
 			transactionInfo.currencyKey,
 			transactionInfo.changeAmount,
 			transactionInfo.newValue,
-			transactionInfo.changeAmount .. " " .. transactionInfo.currencyKey
+			transactionInfo.reason or (transactionInfo.changeAmount .. " " .. transactionInfo.currencyKey)
 		)
 
 		print(logMessage)
@@ -141,14 +145,13 @@ local function logTransaction(transactionInfo)
 
 	AnalyticsService:LogEconomyEvent(
 		Players:GetPlayerByUserId(transactionInfo.playerID),
-		Enum.AnalyticsEconomyFlowType.Source,
+		flowType,
 		transactionInfo.currencyKey,
 		transactionInfo.changeAmount,
 		transactionInfo.newValue,
-		Enum.AnalyticsEconomyTransactionType.IAP.Name,
-		transactionInfo.changeAmount .. " " .. transactionInfo.currencyKey
+		transactionType, -- Use the actual enum value
+		transactionInfo.reason or (transactionInfo.changeAmount .. " " .. transactionInfo.currencyKey)
 	)
-
 end
 
 -- Profile Management
@@ -340,8 +343,8 @@ local function InitializeCurrency(currencyName, currencyData)
 		return success and result or self.defaultValue, success
 	end
 
-	-- Set the currency value with validation
-	function currencyData:SetValue(playerID, value)
+	-- Update SetValue to accept transaction type
+	function currencyData:SetValue(playerID, value, reason, transactionType)
 		if not isValidNumber(value) then
 			return false, "Invalid value"
 		end
@@ -367,7 +370,8 @@ local function InitializeCurrency(currencyName, currencyData)
 				previousValue = currentValue,
 				newValue = value,
 				changeAmount = value - currentValue,
-				reason = "SetValue"
+				reason = reason or "SetValue",
+				transactionType = transactionType or Enum.AnalyticsEconomyTransactionType.Default
 			}
 
 			-- Update the value
@@ -384,8 +388,8 @@ local function InitializeCurrency(currencyName, currencyData)
 		return success, not success and result or nil
 	end
 
-	-- Increment the currency value
-	function currencyData:IncrementValue(playerID, amount, reason)
+	-- Update IncrementValue to accept transaction type
+	function currencyData:IncrementValue(playerID, amount, reason, transactionType)
 		if not isValidNumber(amount) then
 			return false, "Invalid amount"
 		end
@@ -406,6 +410,11 @@ local function InitializeCurrency(currencyName, currencyData)
 			-- Clamp to valid range
 			newValue = math.clamp(newValue, self.minValue, self.maxValue)
 
+			-- Default transaction type based on whether adding or removing
+			local defaultType = amount >= 0 
+				and Enum.AnalyticsEconomyTransactionType.Default
+				or Enum.AnalyticsEconomyTransactionType.Sink
+
 			-- Save the transaction
 			local transactionInfo = {
 				transactionId = generateTransactionID(),
@@ -415,7 +424,8 @@ local function InitializeCurrency(currencyName, currencyData)
 				previousValue = currentValue,
 				newValue = newValue,
 				changeAmount = amount,
-				reason = reason or "IncrementValue"
+				reason = reason or "IncrementValue",
+				transactionType = transactionType or defaultType
 			}
 
 			-- Update the value
@@ -432,17 +442,22 @@ local function InitializeCurrency(currencyName, currencyData)
 		return success, not success and result or nil
 	end
 
-	-- Decrement the currency value
-	function currencyData:DecrementValue(playerID, amount, reason)
+	-- Update DecrementValue to accept transaction type
+	function currencyData:DecrementValue(playerID, amount, reason, transactionType)
 		if not isValidNumber(amount) or amount < 0 then
 			return false, "Invalid amount"
 		end
 
-		return self:IncrementValue(playerID, -amount, reason or "DecrementValue")
+		return self:IncrementValue(
+			playerID, 
+			-amount, 
+			reason or "DecrementValue", 
+			transactionType or Enum.AnalyticsEconomyTransactionType.Sink
+		)
 	end
 
-	-- Transfer currency between players
-	function currencyData:TransferValue(fromPlayerID, toPlayerID, amount, reason)
+	-- Update TransferValue to accept transaction type
+	function currencyData:TransferValue(fromPlayerID, toPlayerID, amount, reason, transactionType)
 		if not isValidNumber(amount) or amount <= 0 then
 			return false, "Invalid amount"
 		end
@@ -460,6 +475,9 @@ local function InitializeCurrency(currencyName, currencyData)
 		if currentValue < amount then
 			return false, "Insufficient funds"
 		end
+
+		-- Default transaction type for transfers if not specified
+		local transferType = transactionType or Enum.AnalyticsEconomyTransactionType.Trade
 
 		-- Wait until both players are free from other transactions.
 		while transactionLocks[fromPlayerID] or transactionLocks[toPlayerID] do
@@ -480,7 +498,8 @@ local function InitializeCurrency(currencyName, currencyData)
 				previousValue = currentValue,
 				newValue = newValue,
 				changeAmount = -amount,
-				reason = reason or "TransferSent"
+				reason = reason or "TransferSent",
+				transactionType = transferType
 			}
 			profile.Data.currencies[self.saveKey] = newValue
 			logTransaction(transactionInfo)
@@ -504,7 +523,8 @@ local function InitializeCurrency(currencyName, currencyData)
 				previousValue = currentValue,
 				newValue = newValue,
 				changeAmount = amount,
-				reason = reason or "TransferReceived"
+				reason = reason or "TransferReceived",
+				transactionType = transferType
 			}
 			profile.Data.currencies[self.saveKey] = newValue
 			logTransaction(transactionInfo)
@@ -528,7 +548,8 @@ local function InitializeCurrency(currencyName, currencyData)
 					previousValue = currentValue,
 					newValue = rollbackValue,
 					changeAmount = amount,
-					reason = "TransferRollback"
+					reason = "TransferRollback",
+					transactionType = Enum.AnalyticsEconomyTransactionType.Default
 				})
 				return true
 			end)
@@ -632,20 +653,21 @@ end
 function Economy.ProcessReceipt(receiptInfo)
 	-- Enhanced Studio testing mode
 	if RunService:IsStudio() then
-		
+
 		print("[Economy] Auto-granting purchase in Studio environment for Product ID:", receiptInfo.ProductId)
 
 		local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
 		if player then
-			
+
 			local mapping = developerProductMapping[receiptInfo.ProductId]
 			if mapping then
-				
+
 				local currency = mapping.currencyData
 				local success, errorMsg = currency:IncrementValue(
 					receiptInfo.PlayerId,
 					mapping.amount,
-					"StudioPurchase_" .. (receiptInfo.ReceiptId or HttpService:GenerateGUID(false))
+					"StudioPurchase_" .. (receiptInfo.ReceiptId or HttpService:GenerateGUID(false)),
+					Enum.AnalyticsEconomyTransactionType.IAP -- Explicitly use IAP type for purchases
 				)
 
 				if not success then
@@ -659,6 +681,7 @@ function Economy.ProcessReceipt(receiptInfo)
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
 
+	-- Rest of ProcessReceipt function...
 	if not receiptInfo.ReceiptId then
 		warn("[Economy] ReceiptId is nil. This should not happen in production.")
 		return Enum.ProductPurchaseDecision.PurchaseGranted
@@ -672,7 +695,7 @@ function Economy.ProcessReceipt(receiptInfo)
 
 	local player = Players:GetPlayerByUserId(receiptInfo.PlayerId)
 	if not player then
-		
+
 		receiptProcessingMap[receiptInfo.ReceiptId] = nil
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
@@ -680,7 +703,7 @@ function Economy.ProcessReceipt(receiptInfo)
 
 	local profile, errorMsg = safeGetProfile(receiptInfo.PlayerId)
 	if not profile then
-		
+
 		receiptProcessingMap[receiptInfo.ReceiptId] = nil
 		return Enum.ProductPurchaseDecision.NotProcessedYet
 	end
@@ -704,7 +727,8 @@ function Economy.ProcessReceipt(receiptInfo)
 	local success, errorMsg = currency:IncrementValue(
 		receiptInfo.PlayerId, 
 		mapping.amount, 
-		"Purchase_" .. receiptInfo.ReceiptId
+		"Purchase_" .. receiptInfo.ReceiptId,
+		Enum.AnalyticsEconomyTransactionType.IAP -- Explicitly use IAP type for purchases
 	)
 
 	if not success then
