@@ -65,10 +65,10 @@ local Currencies = {
 		minValue = 0,
 		maxValue = 1_000_000_000, -- 1 billion max
 		purchaseIDs = {
-			[100] = 3254661193,      -- 1 Robux
-			[10000] = 3254661195,    -- 300 Robux
-			[100000] = 3254661196,   -- 1000 Robux
-			[1000000] = 3254661198,  -- 5000 Robux
+			[100] = { SKU = "100 Cash", ID = 3254661193 },  -- 1 Robux
+			[10000] = { SKU = "10k Cash", ID = 3254661195 },  -- 300 Robux
+			[100000] = { SKU = "100k Cash", ID = 3254661196 },  -- 1000 Robux
+			[1000000] = { SKU = "1M Cash", ID = 3254661198 },  -- 5000 Robux
 		}
 	},
 	Gems = {
@@ -101,7 +101,7 @@ do
 	for currencyName, currencyData in pairs(Currencies) do
 		if currencyData.purchaseIDs then
 			for amount, productId in pairs(currencyData.purchaseIDs) do
-				developerProductMapping[productId] = { 
+				developerProductMapping[productId.ID] = { 
 					currencyName = currencyName,
 					currencyData = currencyData, 
 					amount = amount 
@@ -600,7 +600,7 @@ function Economy.PurchaseCurrencyAsync(player, currencyName, currencyAmount)
 		return false, "No valid Purchase ID found for currency: " .. currencyName .. ", amount: " .. currencyAmount
 	end
 
-	local purchaseID = currency.purchaseIDs[currencyAmount]
+	local purchaseID = currency.purchaseIDs[currencyAmount].ID
 
 	-- Production environment - prompt real purchase
 	local success, errorMessage = pcall(function()
@@ -625,7 +625,7 @@ function Economy.GetPurchaseOptions(currencyName)
 	for amount, productId in pairs(currency.purchaseIDs) do
 		table.insert(options, {
 			amount = amount,
-			productId = productId
+			productId = productId.ID
 		})
 	end
 
@@ -659,12 +659,6 @@ function Economy.GetPlayerCurrencies(playerID)
 end
 
 function Economy.ProcessReceipt(receiptInfo)
-	
-	-- Get product info for the developer product
-	local success, productInfo = pcall(function()
-		return MarketplaceService:GetProductInfo(receiptInfo.ProductId)
-	end)
-	local productName = (success and productInfo and productInfo.Name) or "Unknown Product"
 
 	-- Enhanced Studio testing mode
 	if RunService:IsStudio() then
@@ -679,7 +673,7 @@ function Economy.ProcessReceipt(receiptInfo)
 				local success, errorMsg = currency:IncrementValue(
 					receiptInfo.PlayerId,
 					mapping.amount,
-					"StudioPurchase_" .. productName,
+					mapping.currencyData.purchaseIDs[mapping.amount].SKU,
 					Enum.AnalyticsEconomyTransactionType.IAP -- Explicitly use IAP type for purchases
 				)
 				if not success then
@@ -733,7 +727,7 @@ function Economy.ProcessReceipt(receiptInfo)
 	local success, errorMsg = currency:IncrementValue(
 		receiptInfo.PlayerId, 
 		mapping.amount, 
-		"Purchase_" .. productName,
+		mapping.currencyData.purchaseIDs[mapping.amount].SKU,
 		Enum.AnalyticsEconomyTransactionType.IAP -- Explicitly use IAP type for purchases
 	)
 
@@ -744,7 +738,7 @@ function Economy.ProcessReceipt(receiptInfo)
 	end
 
 	-- Log the developer product name for production purchases
-	print("[Economy] Purchase processed for product:", productName)
+	print("[Economy] Purchase processed for product:", mapping.currencyData.purchaseIDs[mapping.amount].SKU)
 
 	profile.Data.processedReceipts[receiptInfo.PurchaseId] = DateTime.now().UnixTimestampMillis * 1000
 
