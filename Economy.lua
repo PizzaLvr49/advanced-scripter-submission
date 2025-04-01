@@ -118,12 +118,13 @@ local function generateTransactionID()
 end
 
 local function logTransaction(transactionInfo)
-	
-	local transactionType = transactionInfo.transactionType or Enum.AnalyticsEconomyTransactionType.Default
-
+	-- Determine the flow type based on whether currency is being added or removed
 	local flowType = transactionInfo.changeAmount >= 0 
 		and Enum.AnalyticsEconomyFlowType.Source 
 		or Enum.AnalyticsEconomyFlowType.Sink
+
+	-- Use the provided transaction type or Default if not specified
+	local transactionType = transactionInfo.transactionType or Enum.AnalyticsEconomyTransactionType.Default
 
 	if RunService:IsStudio() then
 		local player = Players:GetPlayerByUserId(transactionInfo.playerID)
@@ -132,25 +133,26 @@ local function logTransaction(transactionInfo)
 		local logMessage = string.format(
 			"[TRANSACTION] Player: %s | Type: %s | Flow: %s | Currency: %s | Change: %+d | New Balance: %d | Description: %s",
 			playerName,
-			transactionType.Name,
-			tostring(flowType),
+			transactionType.Name,  -- Use Name for display only
+			flowType.Name,        -- Use Name for display only
 			transactionInfo.currencyKey,
 			transactionInfo.changeAmount,
 			transactionInfo.newValue,
-			transactionInfo.reason or (transactionInfo.changeAmount .. " " .. transactionInfo.currencyKey)
+			(transactionInfo.changeAmount .. " " .. transactionInfo.currencyKey)
 		)
 
 		print(logMessage)
 	end
 
+	-- Use actual enum values when calling the API
 	AnalyticsService:LogEconomyEvent(
 		Players:GetPlayerByUserId(transactionInfo.playerID),
-		flowType,
+		flowType,                 -- Flow type: Source or Sink
 		transactionInfo.currencyKey,
-		transactionInfo.changeAmount,
+		math.abs(transactionInfo.changeAmount),  -- Use absolute value as the API expects
 		transactionInfo.newValue,
-		transactionType, -- Use the actual enum value
-		transactionInfo.reason or (transactionInfo.changeAmount .. " " .. transactionInfo.currencyKey)
+		transactionType.Name,          -- Transaction type: Gameplay, Shop, etc.
+		(transactionInfo.changeAmount .. " " .. transactionInfo.currencyKey)
 	)
 end
 
@@ -343,7 +345,7 @@ local function InitializeCurrency(currencyName, currencyData)
 		return success and result or self.defaultValue, success
 	end
 
-	-- Update SetValue to accept transaction type
+	-- Update SetValue to use valid transaction types
 	function currencyData:SetValue(playerID, value, reason, transactionType)
 		if not isValidNumber(value) then
 			return false, "Invalid value"
@@ -361,6 +363,10 @@ local function InitializeCurrency(currencyName, currencyData)
 			-- Clamp to valid range
 			value = math.clamp(value, self.minValue, self.maxValue)
 
+			-- Determine appropriate transaction type
+			local changeAmount = value - currentValue
+			local defaultType = nil -- Let logTransaction choose the appropriate fallback
+
 			-- Save the transaction
 			local transactionInfo = {
 				transactionId = generateTransactionID(),
@@ -369,9 +375,9 @@ local function InitializeCurrency(currencyName, currencyData)
 				currencyKey = self.saveKey,
 				previousValue = currentValue,
 				newValue = value,
-				changeAmount = value - currentValue,
+				changeAmount = changeAmount,
 				reason = reason or "SetValue",
-				transactionType = transactionType or Enum.AnalyticsEconomyTransactionType.Default
+				transactionType = transactionType or defaultType
 			}
 
 			-- Update the value
@@ -388,7 +394,7 @@ local function InitializeCurrency(currencyName, currencyData)
 		return success, not success and result or nil
 	end
 
-	-- Update IncrementValue to accept transaction type
+	-- Update IncrementValue to use valid transaction types
 	function currencyData:IncrementValue(playerID, amount, reason, transactionType)
 		if not isValidNumber(amount) then
 			return false, "Invalid amount"
@@ -411,9 +417,7 @@ local function InitializeCurrency(currencyName, currencyData)
 			newValue = math.clamp(newValue, self.minValue, self.maxValue)
 
 			-- Default transaction type based on whether adding or removing
-			local defaultType = amount >= 0 
-				and Enum.AnalyticsEconomyTransactionType.Default
-				or Enum.AnalyticsEconomyTransactionType.Sink
+			local defaultType = nil -- Let logTransaction choose appropriate fallback
 
 			-- Save the transaction
 			local transactionInfo = {
@@ -442,7 +446,7 @@ local function InitializeCurrency(currencyName, currencyData)
 		return success, not success and result or nil
 	end
 
-	-- Update DecrementValue to accept transaction type
+	-- Update DecrementValue to use valid transaction types
 	function currencyData:DecrementValue(playerID, amount, reason, transactionType)
 		if not isValidNumber(amount) or amount < 0 then
 			return false, "Invalid amount"
@@ -456,7 +460,7 @@ local function InitializeCurrency(currencyName, currencyData)
 		)
 	end
 
-	-- Update TransferValue to accept transaction type
+	-- Update TransferValue to use valid transaction types
 	function currencyData:TransferValue(fromPlayerID, toPlayerID, amount, reason, transactionType)
 		if not isValidNumber(amount) or amount <= 0 then
 			return false, "Invalid amount"
@@ -549,7 +553,7 @@ local function InitializeCurrency(currencyName, currencyData)
 					newValue = rollbackValue,
 					changeAmount = amount,
 					reason = "TransferRollback",
-					transactionType = Enum.AnalyticsEconomyTransactionType.Default
+					transactionType = Enum.AnalyticsEconomyTransactionType.Source  -- Use Source for rollbacks
 				})
 				return true
 			end)
@@ -603,7 +607,7 @@ function Economy.PurchaseCurrencyAsync(player, currencyName, currencyAmount)
 		warn("[Economy] Error prompting product purchase: " .. errorMessage)
 		return false, "Failed to prompt purchase"
 	end
-	
+
 	return true
 end
 
@@ -681,7 +685,6 @@ function Economy.ProcessReceipt(receiptInfo)
 		return Enum.ProductPurchaseDecision.PurchaseGranted
 	end
 
-	-- Rest of ProcessReceipt function...
 	if not receiptInfo.ReceiptId then
 		warn("[Economy] ReceiptId is nil. This should not happen in production.")
 		return Enum.ProductPurchaseDecision.PurchaseGranted
